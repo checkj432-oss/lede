@@ -36,7 +36,9 @@ jobs:
           git clone https://github.com/xiaorouji/openwrt-passwall2 package/passwall2
           # 添加 OpenClash 源码
           git clone https://github.com/vernesong/OpenClash package/openclash
-          # 更新 feeds 识别新插件
+      # 更新 feeds 识别新插件
+      - name: 添加第三方插件源
+        run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
