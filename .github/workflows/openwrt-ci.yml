@@ -29,67 +29,71 @@ jobs:
           git bzip2 flex gawk gcc g++ g++-multilib lib32z1-dev libssl-dev \
           python3 python3-pip unzip zlib1g-dev file wget rsync
 
-      # 3. 更新 Feeds（LEDE 特有）
-      - name: 添加第三方插件源因
+      # 3. 添加 OpenClash 源码
+      - name: 添加 OpenClash 插件源
         run: |
-          # 添加 OpenClash 源码
-          git clone https://github.com/vernesong/OpenClash package/openclash
-      # 更新 feeds 识别新插件
-      - name: 添加第三方插件源
+          git clone https://github.com/vernesong/OpenClash.git package/openclash
+
+      # 4. 更新 Feeds
+      - name: 更新 Feeds
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 4. 导入 CR6608 配置（LEDE 版本）
+      # 5. 导入 CR6608 配置（只包含 OpenClash）
       - name: 导入设备配置
         run: |
-          # 设置目标平台（LEDE 路径与 OP 一致）
+          # 设置目标平台
           echo "CONFIG_TARGET_ramips=y" >> .config
           echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
-          # LEDE 中 CR6608 的设备名（与原厂相同）
           echo "CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6608=y" >> .config
           
-          # 分区大小（LEDE 官方已适配，保持默认即可）
-          # 如需调整，LEDE 中通过 DEVICE_PACKAGES 和 Image Builder 处理
-          
-          # 运行 defconfig 自动处理依赖
+          # 基础配置
           make defconfig
           
-          # ⭐ 关键：LEDE 的无线驱动集成方式不同，添加以下配置
-          # LEDE 中 mt7915 驱动已默认包含，额外确保启用
+          # 无线驱动
           echo "CONFIG_PACKAGE_kmod-mt7915e=y" >> .config
           echo "CONFIG_PACKAGE_kmod-mt7915-firmware=y" >> .config
           
-          # 添加 LuCI 和常用插件（LEDE 风格的包名）
+          # LuCI 基础
           echo "CONFIG_PACKAGE_luci=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-firewall=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-opkg=y" >> .config
           echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-passwall2=y" >> .config
+          
+          # OpenClash（唯一科学上网插件）
           echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
           
           # 再次运行 defconfig 解析依赖
           make defconfig
 
-      # 5. 预下载软件包
+      # 6. 预下载软件包
       - name: 下载依赖
         run: |
           make download -j8
-          # LEDE 源在国内，下载失败时可重试
-          make download -j8 || make download -j4
 
-      # 6. 开始编译
+      # 7. 开始编译
       - name: 编译固件
         run: |
-          nproc=$(nproc)
-          echo "使用 ${nproc} 个线程编译"
-          make -j${nproc} V=s
+          echo "开始编译，使用 $(nproc) 个线程"
+          make -j$(nproc) V=s
 
-      # 7. 上传固件
+      # 8. 检查固件是否生成
+      - name: 检查固件
+        run: |
+          echo "检查 bin 目录："
+          ls -la bin/targets/ramips/mt7621/ || true
+          if ls bin/targets/ramips/mt7621/*-squashfs-sysupgrade.bin 1> /dev/null 2>&1; then
+            echo "✅ 固件生成成功"
+          else
+            echo "❌ 固件未生成，编译可能失败"
+            exit 1
+          fi
+
+      # 9. 上传固件
       - name: 上传成品固件
         uses: actions/upload-artifact@v4
         with:
-          name: LEDE_CR6608_$(date +'%Y%m%d_%H%M%S')
-          path: |
-            bin/targets/ramips/mt7621/*-squashfs-*.bin
+          name: LEDE_CR6608_OpenClash_$(date +'%Y%m%d_%H%M%S')
+          path: bin/targets/ramips/mt7621/*-squashfs-sysupgrade.bin
           if-no-files-found: error
