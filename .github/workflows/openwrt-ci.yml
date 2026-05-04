@@ -92,5 +92,4 @@ jobs:
           name: LEDE_CR6608_$(date +'%Y%m%d_%H%M%S')
           path: |
             bin/targets/ramips/mt7621/*-squashfs-*.bin
-            bin/targets/ramips/mt7621/*.manifest
           if-no-files-found: error
