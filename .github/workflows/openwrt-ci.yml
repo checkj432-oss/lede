@@ -1,107 +1,91 @@
-# 
-# <https://github.com/KFERMercer/OpenWrt-CI>
-#
-# Copyright (C) 2019 P3TERX
-#
-# Copyright (C) 2020 KFERMercer
-#
-name: OpenWrt-CI
+# 工作流名称：小米CR6608 LEDE 专属 OpenWrt 编译
+name: Build LEDE - Xiaomi CR6608
 
+# 触发编译规则
 on:
-  schedule:
-    - cron: 0 20 * * *
+  workflow_dispatch:    # 手动触发（最常用）
+  push:                 # 提交代码自动触发
+    branches:
+      - master
 
-permissions:
-  contents: read
-
+# 编译任务
 jobs:
-
-  build_openwrt:
-
-    name: Build OpenWrt Firmware
-
+  build:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Space cleanup and Initialization environment
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          docker image prune -f
-          sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
-          sudo -E apt-mark hold grub-efi-amd64-signed
-          sudo -E apt update
-          sudo -E apt -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* dotnet* snap*
-          sudo -E apt -y full-upgrade
-          sudo -E apt -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
-          sudo -E systemctl daemon-reload
-          sudo -E apt -y autoremove --purge
-          sudo -E apt clean
-          sudo -E timedatectl set-timezone "Asia/Shanghai"
-
-      - name: Checkout OpenWrt
+      # 1. 拉取 LEDE 源码
+      - name: 拉取 LEDE 源码
         uses: actions/checkout@v4
-
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
         with:
-          # this might remove tools that are actually needed,
-          # if set to "true" but frees about 6 GB
-          tool-cache: true
-          # all of these default to true, but feel free to set to
-          # "false" if necessary for your workflow
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
+          repository: coolsnowwolf/lede
+          ref: master
 
-      - name: Update feeds
+      # 2. 安装编译依赖环境
+      - name: 初始化编译环境
         run: |
-          sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
+          sudo apt update -y
+          sudo apt upgrade -y
+          sudo apt install -y build-essential libncurses5-dev libncursesw5-dev \
+          git bzip2 flex gawk gcc g++ g++-multilib lib32z1-dev libssl-dev \
+          python3 python3-pip unzip zlib1g-dev file wget rsync
+
+      # 3. 更新 Feeds（LEDE 特有）
+      - name: 更新 Feeds
+        run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Generate configuration file
-        run: make defconfig
-
-      - name: Download packages
-        run: make download -j16
-
-      - name: Compile firmware
+      # 4. 导入 CR6608 配置（LEDE 版本）
+      - name: 导入设备配置
         run: |
-          make -j$(nproc) || make -j1 V=s
-          echo "======================="
-          echo "Space usage:"
-          echo "======================="
-          df -h
-          echo "======================="
-          du -h --max-depth=1 ./ --exclude=build_dir --exclude=bin
-          du -h --max-depth=1 ./build_dir
-          du -h --max-depth=1 ./bin
+          # 设置目标平台（LEDE 路径与 OP 一致）
+          echo "CONFIG_TARGET_ramips=y" >> .config
+          echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
+          # LEDE 中 CR6608 的设备名（与原厂相同）
+          echo "CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6608=y" >> .config
+          
+          # 分区大小（LEDE 官方已适配，保持默认即可）
+          # 如需调整，LEDE 中通过 DEVICE_PACKAGES 和 Image Builder 处理
+          
+          # 运行 defconfig 自动处理依赖
+          make defconfig
+          
+          # ⭐ 关键：LEDE 的无线驱动集成方式不同，添加以下配置
+          # LEDE 中 mt7915 驱动已默认包含，额外确保启用
+          echo "CONFIG_PACKAGE_kmod-mt7915e=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-mt7915-firmware=y" >> .config
+          
+          # 添加 LuCI 和常用插件（LEDE 风格的包名）
+          echo "CONFIG_PACKAGE_luci=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-firewall=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-opkg=y" >> .config
+          echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall2=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
+          
+          # 再次运行 defconfig 解析依赖
+          make defconfig
 
-      - name: Prepare artifact
+      # 5. 预下载软件包
+      - name: 下载依赖
         run: |
-          mkdir -p ./artifact/package
-          mkdir -p ./artifact/buildinfo
-          rm -rf $(find ./bin/targets/ -type d -name "packages")
-          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
-          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
+          make download -j8
+          # LEDE 源在国内，下载失败时可重试
+          make download -j8 || make download -j4
 
-      - name: Upload buildinfo
+      # 6. 开始编译
+      - name: 编译固件
+        run: |
+          nproc=$(nproc)
+          echo "使用 ${nproc} 个线程编译"
+          make -j${nproc} V=s
+
+      # 7. 上传固件
+      - name: 上传成品固件
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_buildinfo
-          path: ./artifact/buildinfo/
-
-      - name: Upload package
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt_package
-          path: ./artifact/package/
-
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt_firmware
-          path: ./bin/targets/
+          name: LEDE_CR6608_$(date +'%Y%m%d_%H%M%S')
+          path: |
+            bin/targets/ramips/mt7621/*-squashfs-*.bin
+            bin/targets/ramips/mt7621/*.manifest
+          if-no-files-found: error
