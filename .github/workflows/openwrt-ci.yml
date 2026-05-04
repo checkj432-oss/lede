@@ -33,7 +33,7 @@ jobs:
       - name: 添加第三方插件源
         run: |
           # 添加 PassWall2 源码（Lienol 源）
-          git clone https://github.com/xiaorouji/openwrt-passwall2 package/passwall2
+          # git clone https://github.com/xiaorouji/openwrt-passwall2 package/passwall2
           # 添加 OpenClash 源码
           git clone https://github.com/vernesong/OpenClash package/openclash
       # 更新 feeds 识别新插件
