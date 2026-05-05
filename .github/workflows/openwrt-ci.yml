@@ -1,33 +1,31 @@
-# 工作流名称：小米CR6608 LEDE 专属 OpenWrt 编译
-name: Build LEDE - Xiaomi CR6608
+# 工作流名称：小米CR6608 LEDE 稳定版编译
+name: Build LEDE - Xiaomi CR6608 (Stable)
 
-# 触发编译规则
 on:
-  workflow_dispatch:    # 手动触发（最常用）
-  push:                 # 提交代码自动触发
+  workflow_dispatch:
+  push:
     branches:
       - master
 
-# 编译任务
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      # 1. 拉取 LEDE 源码
+      # 1. 拉取 LEDE 源码（使用稳定分支）
       - name: 拉取 LEDE 源码
         uses: actions/checkout@v4
         with:
           repository: coolsnowwolf/lede
-          ref: master
+          ref: openwrt-23.05   # 使用稳定分支，避免 master 的 DTS 错误
 
-      # 2. 安装编译依赖环境
+      # 2. 安装编译依赖
       - name: 初始化编译环境
         run: |
           sudo apt update -y
           sudo apt upgrade -y
           sudo apt install -y build-essential libncurses5-dev libncursesw5-dev \
           git bzip2 flex gawk gcc g++ g++-multilib lib32z1-dev libssl-dev \
-          python3 python3-pip unzip zlib1g-dev file wget rsync
+          python3 python3-pip unzip zlib1g-dev file wget rsync time
 
       # 3. 添加 OpenClash 源码
       - name: 添加 OpenClash 插件源
@@ -40,7 +38,47 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 5. 导入 CR6608 配置（只包含 OpenClash）
+      # 5. 自动修复 DTS 文件（如果存在错误）
+      - name: 自动修复设备树文件
+        run: |
+          DTS_FILE="target/linux/ramips/dts/mt7621.dtsi"
+          
+          # 检查文件是否存在
+          if [ -f "$DTS_FILE" ]; then
+            echo "检查并修复 $DTS_FILE"
+            
+            # 备份原文件
+            cp $DTS_FILE ${DTS_FILE}.bak
+            
+            # 修复1：为 gpio 添加 #address-cells（如果缺失）
+            if ! grep -A5 "gpio: gpio@600" $DTS_FILE | grep -q "#address-cells"; then
+              sed -i '/gpio: gpio@600 {/,/};/ {
+                /interrupt-controller;/a\	#address-cells = <0>;
+              }' $DTS_FILE
+              echo "✅ 已修复 gpio 节点"
+            fi
+            
+            # 修复2：为 gic 添加 #address-cells（如果缺失）
+            if ! grep -A10 "interrupt-controller@1fbc0000" $DTS_FILE | grep -q "#address-cells"; then
+              sed -i '/gic: interrupt-controller@1fbc0000 {/,/};/ {
+                /#interrupt-cells = <3>;/a\	#address-cells = <0>;
+              }' $DTS_FILE
+              echo "✅ 已修复 gic 节点"
+            fi
+            
+            # 修复3：修正 port@5 和 port@6 的 reg 格式
+            if grep -q 'reg = <5>' $DTS_FILE; then
+              sed -i 's/reg = <5>/reg = <0x00000005>/g' $DTS_FILE
+              sed -i 's/reg = <6>/reg = <0x00000006>/g' $DTS_FILE
+              echo "✅ 已修复 port 节点 reg 格式"
+            fi
+            
+            echo "DTS 文件修复完成"
+          else
+            echo "DTS 文件不存在，跳过修复"
+          fi
+
+      # 6. 导入设备配置
       - name: 导入设备配置
         run: |
           # 设置目标平台
@@ -48,7 +86,7 @@ jobs:
           echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
           echo "CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6608=y" >> .config
           
-          # 基础配置
+          # 自动处理基础依赖
           make defconfig
           
           # 无线驱动
@@ -61,39 +99,53 @@ jobs:
           echo "CONFIG_PACKAGE_luci-app-opkg=y" >> .config
           echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
           
-          # OpenClash（唯一科学上网插件）
+          # OpenClash
           echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
           
-          # 再次运行 defconfig 解析依赖
+          # 再次运行 defconfig 解析所有依赖
           make defconfig
 
-      # 6. 预下载软件包
+      # 7. 预下载软件包
       - name: 下载依赖
         run: |
           make download -j8
+          # 如果下载失败，重试一次
+          make download -j8 || make download -j4
 
-      # 7. 开始编译
+      # 8. 开始编译
       - name: 编译固件
         run: |
           echo "开始编译，使用 $(nproc) 个线程"
-          make -j$(nproc) V=s
+          make -j$(nproc) V=s 2>&1 | tee build.log
 
-      # 8. 检查固件是否生成
+      # 9. 检查固件是否生成
       - name: 检查固件
         run: |
-          echo "检查 bin 目录："
+          echo "=== bin 目录内容 ==="
           ls -la bin/targets/ramips/mt7621/ || true
+          
           if ls bin/targets/ramips/mt7621/*-squashfs-sysupgrade.bin 1> /dev/null 2>&1; then
-            echo "✅ 固件生成成功"
+            echo "✅ 固件生成成功！"
+            echo "固件文件："
+            ls -la bin/targets/ramips/mt7621/*-squashfs-sysupgrade.bin
           else
-            echo "❌ 固件未生成，编译可能失败"
+            echo "❌ 固件未生成"
+            echo "查看 build.log 中的错误信息"
             exit 1
           fi
 
-      # 9. 上传固件
+      # 10. 上传固件
       - name: 上传成品固件
         uses: actions/upload-artifact@v4
         with:
-          name: LEDE_CR6608_OpenClash_$(date +'%Y%m%d_%H%M%S')
+          name: CR6608_OpenClash_$(date +'%Y%m%d_%H%M%S')
           path: bin/targets/ramips/mt7621/*-squashfs-sysupgrade.bin
           if-no-files-found: error
+
+      # 11. 如果失败，上传日志供调试
+      - name: 上传编译日志
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build_log_$(date +'%Y%m%d_%H%M%S')
+          path: build.log
